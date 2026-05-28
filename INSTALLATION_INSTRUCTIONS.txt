@@ -1,0 +1,50 @@
+# Inspira: Nano Banana Edition - Installation Guide 🍌
+
+This guide will help you set up the original AI-powered storyboard production studio from the Google DeepMind Nano Banana Hackathon. This version focuses on the core cloud-based synergy between **Google Gemini 2.5/3.1** and **ElevenLabs**.
+
+## 📋 Prerequisites
+
+1.  **Python 3.10+** installed on your system.
+2.  **Google AI API Key**: Get one for free (within limits) at [Google AI Studio](https://aistudio.google.com/).
+3.  **ElevenLabs API Key**: (Optional) For high-quality voice synthesis. Get one at [ElevenLabs](https://elevenlabs.io/).
+
+## 🚀 Setup Instructions
+
+1.  **Clone the Repository**
+    ```bash
+    git clone https://github.com/your-username/Inspira-nano.git
+    cd Inspira-nano
+    ```
+
+2.  **Create a Virtual Environment**
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+    ```
+
+3.  **Install Dependencies**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+4.  **Run the Application**
+    ```bash
+    python comprehensive_studio.py
+    ```
+
+## 🔑 Initial Configuration
+
+1.  Open the app in your browser (usually at `http://127.0.0.1:7860`).
+2.  Navigate to the **🔑 API Setup** tab.
+3.  Enter your **Google Gemini API Key** and click **Configure Gemini API**.
+4.  (Optional) Enter your **ElevenLabs API Key** and click **Save ElevenLabs Settings**.
+
+## 🎨 Workflow
+
+1.  **Chat**: Brainstorm your characters and world in the **💬 Character Development** tab.
+2.  **Scan**: Click **Scan Chat for Characters** to save them to your library.
+3.  **Studio**: Generate reference images for your characters using Gemini.
+4.  **Storyboard**: Build scenes, generate panels, and layer in character voices.
+
+---
+*Questions? Issues? Check the original hackathon documentation or open a GitHub issue.*
