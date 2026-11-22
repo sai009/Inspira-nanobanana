@@ -14,7 +14,7 @@ google-generativeai>=0.3.0
 requests>=2.25.0
 
 # Environment Variables
-python-dotenv>=1.0.0
+python-dotenv>=1.2.4
 
 # Optional: Audio Processing (for enhanced features)
 # Uncomment these if you want advanced audio functionality
