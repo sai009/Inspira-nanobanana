@@ -108,3 +108,21 @@ If you want to extend this edition locally, the pipeline is designed to be futur
 ---
 
 *Built with ❤️ for the AI Creative Community during the Google DeepMind Nano Banana Hackathon.*
+
+---
+
+## 👤 About the Author
+
+**Sai Keshavamatham** (@sai009) — Fremont, California
+
+Builder of self-training bipedal robots (Pollen Microduck, 25 cm, 15 motors) and creative AI tools. This project was created for the Google DeepMind Nano Banana Hackathon (2025), Special Technology Prize – ElevenLabs.
+
+- **GitHub**: https://github.com/sai009
+- **Kaggle**: https://www.kaggle.com/wavesandpixelsfilms
+
+## 📄 License
+
+Code: [MIT License](LICENSE)  
+Writeup/essay: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+
+You are free to use, modify, and distribute the code with attribution. If you reuse the writeup or essay text, credit WavesAndPiXels Films per CC BY 4.0.
