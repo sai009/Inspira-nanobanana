@@ -2,7 +2,7 @@
 # Core dependencies for the comprehensive storyboard creation platform
 
 # Web UI Framework
-gradio>=4.0.0
+gradio>=6.32.0
 
 # Image Processing
 Pillow>=10.0.0
