@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.pyc
 .Python
 env/
 venv/
@@ -25,12 +26,19 @@ wheels/
 
 # OS
 .DS_Store
-.DS_Store?
-._*
+.DS_Store?._
+*.DS_Store
 .Spotlight-V100
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 
 # Assets (Public)
 # assets/ is tracked
