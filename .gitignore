@@ -39,3 +39,7 @@ Thumbs.db
 misc/
 data/
 audio_output/
+
+# Secrets
+.env
+.env.local

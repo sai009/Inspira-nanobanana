@@ -1,50 +1,136 @@
-# Inspira: Nano Banana Edition - Installation Guide 🍌
+AI STORYBOARD PRODUCTION STUDIO - INSTALLATION GUIDE
+=====================================================
 
-This guide will help you set up the original AI-powered storyboard production studio from the Google DeepMind Nano Banana Hackathon. This version focuses on the core cloud-based synergy between **Google Gemini 2.5/3.1** and **ElevenLabs**.
+This guide will help you set up the world's first complete AI-powered storyboard production studio that combines Gemini 2.5 Flash Image capabilities with ElevenLabs voice synthesis.
 
-## 📋 Prerequisites
+PREREQUISITES
+-------------
+- Python 3.8 or higher
+- Git (for cloning the repository)
+- Google AI API key (for Gemini 2.5 Flash)
+- ElevenLabs API key (optional, for voice synthesis)
 
-1.  **Python 3.10+** installed on your system.
-2.  **Google AI API Key**: Get one for free (within limits) at [Google AI Studio](https://aistudio.google.com/).
-3.  **ElevenLabs API Key**: (Optional) For high-quality voice synthesis. Get one at [ElevenLabs](https://elevenlabs.io/).
+STEP 1: CLONE OR DOWNLOAD THE PROJECT
+--------------------------------------
+If using Git:
+    git clone <your-repository-url>
+    cd google-genai
 
-## 🚀 Setup Instructions
+If downloading as ZIP:
+    - Extract the ZIP file to your desired location
+    - Navigate to the extracted folder
 
-1.  **Clone the Repository**
-    ```bash
-    git clone https://github.com/your-username/Inspira-nano.git
-    cd Inspira-nano
-    ```
+STEP 2: CREATE A VIRTUAL ENVIRONMENT (RECOMMENDED)
+---------------------------------------------------
+Create a virtual environment to isolate dependencies:
 
-2.  **Create a Virtual Environment**
-    ```bash
+On Windows:
+    python -m venv venv
+    venv\Scripts\activate
+
+On macOS/Linux:
     python3 -m venv venv
-    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-    ```
+    source venv/bin/activate
 
-3.  **Install Dependencies**
-    ```bash
+STEP 3: INSTALL DEPENDENCIES
+-----------------------------
+Install all required packages using pip:
     pip install -r requirements.txt
-    ```
 
-4.  **Run the Application**
-    ```bash
+Or install packages individually:
+    pip install gradio>=4.0.0
+    pip install Pillow>=10.0.0
+    pip install google-generativeai>=0.3.0
+    pip install requests>=2.25.0
+    pip install python-dotenv>=1.0.0
+
+STEP 4: SET UP API KEYS
+-----------------------
+Create a .env file in the project root directory with your API keys:
+
+1. Create .env file:
+    touch .env    (on macOS/Linux)
+    type nul > .env    (on Windows)
+
+2. Add your API keys to .env:
+    GOOGLE_API_KEY=your_google_ai_api_key_here
+    ELEVENLABS_API_KEY=your_elevenlabs_api_key_here    (optional)
+
+To get your API keys:
+- Google AI API Key: Visit https://makersuite.google.com/app/apikey
+- ElevenLabs API Key: Visit https://elevenlabs.io/app/speech-synthesis (optional)
+
+STEP 5: RUN THE APPLICATION
+---------------------------
+Start the AI Storyboard Production Studio:
     python comprehensive_studio.py
-    ```
 
-## 🔑 Initial Configuration
+The application will launch and provide a local URL (typically http://127.0.0.1:7860)
+Open this URL in your web browser to access the studio.
 
-1.  Open the app in your browser (usually at `http://127.0.0.1:7860`).
-2.  Navigate to the **🔑 API Setup** tab.
-3.  Enter your **Google Gemini API Key** and click **Configure Gemini API**.
-4.  (Optional) Enter your **ElevenLabs API Key** and click **Save ElevenLabs Settings**.
+FEATURES AVAILABLE
+------------------
+Once running, you can:
+✅ Create and manage multiple projects
+✅ Develop AI-powered characters with visual references
+✅ Generate consistent character images
+✅ Create scenes with multiple characters
+✅ Build complete storyboards with audio
+✅ Generate character-specific dialogue
+✅ Export projects and storyboards
+✅ Advanced image editing and expansion tools
 
-## 🎨 Workflow
+TROUBLESHOOTING
+---------------
+1. If you get "Module not found" errors:
+   - Ensure your virtual environment is activated
+   - Reinstall requirements: pip install -r requirements.txt
 
-1.  **Chat**: Brainstorm your characters and world in the **💬 Character Development** tab.
-2.  **Scan**: Click **Scan Chat for Characters** to save them to your library.
-3.  **Studio**: Generate reference images for your characters using Gemini.
-4.  **Storyboard**: Build scenes, generate panels, and layer in character voices.
+2. If the application won't start:
+   - Check that your API keys are correctly set in .env
+   - Ensure Python version is 3.8 or higher: python --version
 
----
-*Questions? Issues? Check the original hackathon documentation or open a GitHub issue.*
+3. If image generation fails:
+   - Verify your Google AI API key has image generation permissions
+   - Check your API quota and usage limits
+
+4. For scene selection errors when switching projects:
+   - Click the "Refresh Scenes" button in the Storyboard Builder tab
+   - This issue has been fixed in the latest version
+
+5. If you encounter port conflicts:
+   - The application will automatically find an available port
+   - Check the terminal output for the correct URL
+
+OPTIONAL ENHANCEMENTS
+--------------------
+For advanced audio features, uncomment and install:
+    pip install pydub>=0.25.0
+    pip install librosa>=0.8.0
+
+SYSTEM REQUIREMENTS
+-------------------
+- RAM: Minimum 4GB, Recommended 8GB+
+- Storage: At least 2GB free space for projects and generated content
+- Internet: Required for AI API calls
+- Browser: Modern web browser (Chrome, Firefox, Safari, Edge)
+
+GETTING STARTED
+---------------
+1. Launch the application
+2. Create a new project
+3. Design characters in the Character Development tab
+4. Generate character reference images
+5. Create scenes with your characters
+6. Build storyboards and add audio
+7. Export your complete production
+
+SUPPORT
+-------
+If you encounter issues:
+- Check the terminal output for error messages
+- Ensure all dependencies are properly installed
+- Verify your API keys are valid and have sufficient quota
+- Review the troubleshooting section above
+
+Enjoy creating with the AI Storyboard Production Studio!

@@ -15,17 +15,12 @@ import requests
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any
-from dataclasses import dataclass, asdict, fields
+from dataclasses import dataclass, asdict
 
 import gradio as gr
 from PIL import Image
 from io import BytesIO
-from google import genai
-from google.genai import types
-
-# Suppress Gradio deprecation warnings for a cleaner console experience
-import warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="gradio")
+import google.generativeai as genai
 
 # ElevenLabs Integration
 try:
@@ -76,9 +71,7 @@ def get_project_character_dir(project_id: str, char_id: str) -> Path:
 
 # Models - try multiple image model names as fallback
 POSSIBLE_IMAGE_MODELS = [
-    "gemini-2.5-flash-image",
-    "gemini-3.1-flash-image-preview",
-    "gemini-3-pro-image-preview",
+    "gemini-2.5-flash-image-preview",
     "gemini-2.0-flash-image-preview", 
     "gemini-1.5-flash-image-preview",
     "imagen-3.0-generate-001",
@@ -187,27 +180,13 @@ class Project:
 
 @dataclass
 class AppConfig:
-    """Application configuration (Nano Banana Edition)"""
+    """Application configuration"""
     api_key: str = ""
     elevenlabs_api_key: str = ""
-    voice_provider: str = "elevenlabs"  # "elevenlabs" only for Nano edition
-    llm_provider: str = "gemini"  # "gemini" only for Nano edition
-    image_provider: str = "gemini"  # "gemini" only for Nano edition
     last_project: str = ""
     auto_save: bool = True
     image_quality: str = "high"
     export_format: str = "png"
-    # Legacy/Local settings (Hidden in Nano Edition)
-    ollama_url: str = "http://127.0.0.1:11434"
-    comfyui_url: str = "http://127.0.0.1:8188"
-    qwentts_mode: str = "direct"
-    qwentts_url: str = "http://127.0.0.1:8000"
-    qwentts_path: str = ""
-    acestep_mode: str = "api"
-    acestep_url: str = "http://127.0.0.1:8000"
-    acestep_path: str = ""
-    ollama_model: str = ""
-    comfyui_workflow_path: str = ""
 
 @dataclass
 class VoiceProfile:
@@ -257,12 +236,9 @@ class DataManager:
             try:
                 with open(self.config_path, 'r') as f:
                     data = json.load(f)
-                # Filter data to only include valid fields for AppConfig
-                valid_fields = {f.name for f in fields(AppConfig)}
-                filtered_data = {k: v for k, v in data.items() if k in valid_fields}
-                return AppConfig(**filtered_data)
-            except Exception as e:
-                print(f"Warning: Could not load config, using defaults. Error: {e}")
+                return AppConfig(**data)
+            except Exception:
+                pass
         return AppConfig()
     
     def save_config(self, config: AppConfig):
@@ -358,197 +334,146 @@ class DataManager:
         return False
 
 # =============================================================================
-# COMFYUI INTEGRATION
-# =============================================================================
-
-class ComfyUIClient:
-    """Handles communication with local ComfyUI instance"""
-
-    def __init__(self, url: str, workflow_path: str):
-        self.url = url.rstrip('/')
-        self.workflow_path = workflow_path
-        self.client_id = str(uuid.uuid4())
-
-    def _get_workflow(self) -> Optional[Dict]:
-        """Load and parse workflow JSON"""
-        if not self.workflow_path or not Path(self.workflow_path).exists():
-            return None
-        try:
-            with open(self.workflow_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error loading workflow: {e}")
-            return None
-
-    def generate_image(self, prompt: str, reference_images: List[Image.Image] = None) -> Tuple[Optional[Image.Image], str]:
-        """Generate image via ComfyUI WebSocket API"""
-        workflow = self._get_workflow()
-        if not workflow:
-            return None, "❌ ComfyUI Workflow not found or invalid. Please upload a workflow in the API Setup tab."
-
-        # Simple heuristic to find prompt node (CLIPTextEncode or similar)
-        prompt_node_found = False
-        for node_id, node in workflow.items():
-            if node.get("class_type") == "CLIPTextEncode":
-                if "inputs" in node and "text" in node["inputs"]:
-                    node["inputs"]["text"] = prompt
-                    prompt_node_found = True
-                    break
-
-        if not prompt_node_found:
-            # Fallback: try to find any node with a 'text' input if CLIPTextEncode not found
-            for node_id, node in workflow.items():
-                if "inputs" in node and "text" in node["inputs"]:
-                    node["inputs"]["text"] = prompt
-                    prompt_node_found = True
-                    break
-
-        if not prompt_node_found:
-            return None, "❌ Could not find a text/prompt node in the ComfyUI workflow."
-
-        try:
-            # Prepare payload
-            p = {"prompt": workflow, "client_id": self.client_id}
-            data = json.dumps(p).encode('utf-8')
-
-            # Send to ComfyUI
-            response = requests.post(f"{self.url}/prompt", data=data)
-            if response.status_code != 200:
-                return None, f"❌ ComfyUI Error: {response.text}"
-
-            prompt_id = response.json().get('prompt_id')
-
-            # Poll for results (simplified for now)
-            # In a production app, we'd use WebSockets for progress updates
-            import time
-            max_retries = 30
-            for i in range(max_retries):
-                time.sleep(2)
-                history_resp = requests.get(f"{self.url}/history/{prompt_id}")
-                if history_resp.status_code == 200:
-                    history = history_resp.json()
-                    if prompt_id in history:
-                        # Get output image
-                        outputs = history[prompt_id].get('outputs', {})
-                        for node_id, output in outputs.items():
-                            if 'images' in output:
-                                image_info = output['images'][0]
-                                filename = image_info['filename']
-                                subfolder = image_info['subfolder']
-                                folder_type = image_info['type']
-
-                                img_resp = requests.get(f"{self.url}/view", params={
-                                    "filename": filename,
-                                    "subfolder": subfolder,
-                                    "type": folder_type
-                                })
-
-                                if img_resp.status_code == 200:
-                                    image = Image.open(BytesIO(img_resp.content))
-                                    return image, "✅ Image generated via ComfyUI!"
-
-            return None, "❌ ComfyUI generation timed out."
-
-        except Exception as e:
-            return None, f"❌ ComfyUI Connection Error: {str(e)}"
-
-# =============================================================================
 # IMAGE GENERATION ENGINE
 # =============================================================================
 
 class ImageGenerator:
-    """Enhanced image generation with Gemini or ComfyUI"""
-
-    def __init__(self, config: AppConfig, genai_client: Optional[genai.Client] = None):
-        self.config = config
-        self.genai_client = genai_client
-
-    def configure_api(self, api_key: str, genai_client: genai.Client) -> Tuple[bool, str]:
+    """Enhanced image generation with Gemini"""
+    
+    def __init__(self, api_key: str = ""):
+        self.api_key = api_key
+        if api_key:
+            genai.configure(api_key=api_key)
+    
+    def configure_api(self, api_key: str) -> Tuple[bool, str]:
         """Configure Gemini API key"""
         try:
-            self.genai_client = genai_client
-            self.config.api_key = api_key
-
+            genai.configure(api_key=api_key)
+            self.api_key = api_key
+            
             # Test the API with text model first
-            test_response = self.genai_client.models.generate_content(
-                model=TEXT_MODEL,
-                contents="Hello, this is a test."
-            )
-
+            text_model = genai.GenerativeModel(TEXT_MODEL)
+            test_response = text_model.generate_content("Hello, this is a test.")
+            
             # Test image model access
             try:
-                img_test_response = self.genai_client.models.generate_content(
-                    model=IMAGE_MODEL,
-                    contents="Test"
-                )
+                image_model = genai.GenerativeModel(IMAGE_MODEL)
                 return True, "✅ API Key validated! Both text and image generation models are accessible."
             except Exception as img_error:
                 return True, f"✅ API Key validated for text. ⚠️ Image model issue: {str(img_error)}"
-
+                
         except Exception as e:
             return False, f"❌ API validation failed: {str(e)}"
-
+    
     def generate_image(self, prompt: str, reference_images: List[Image.Image] = None) -> Tuple[Optional[Image.Image], str]:
-        """Generate image using Gemini or ComfyUI based on config"""
-
-        if self.config.image_provider == "comfyui":
-            client = ComfyUIClient(self.config.comfyui_url, self.config.comfyui_workflow_path)
-            return client.generate_image(prompt, reference_images)
-
-        # Default to Gemini
-        if not self.genai_client:
-            return None, "❌ Gemini client not initialized. Switch to ComfyUI or provide a key."
+        """Generate image using Gemini with optional reference images"""
+        if not self.api_key:
+            return None, "❌ API key not configured"
         
         # Try different image models as fallback
-        errors = []
+        last_error = None
         for model_name in POSSIBLE_IMAGE_MODELS:
             try:
+                model = genai.GenerativeModel(model_name)
+                
                 # Prepare content for generation
-                contents = []
-
+                content_parts = []
+                
                 # Add reference images if provided
                 if reference_images:
                     for ref_img in reference_images:
-                        contents.append(ref_img)
-                    contents.append(f"Using the reference images above as style guide, generate: {prompt}")
+                        content_parts.append(ref_img)
+                    content_parts.append(f"Using the reference images above as style guide, generate: {prompt}")
                 else:
-                    contents.append(f"Generate an image: {prompt}")
-
-                response = self.genai_client.models.generate_content(
-                    model=model_name,
-                    contents=contents
-                )
-
-                # Check for successful generation
-                if hasattr(response, 'candidates') and response.candidates:
-                    # Extract image from response
-                    for candidate in response.candidates:
+                    content_parts.append(f"Generate an image: {prompt}")
+                
+                response = model.generate_content(content_parts)
+                
+                # Extract image from response - enhanced error handling
+                parts_found = 0
+                inline_data_found = 0
+                
+                # Debug: Check response structure
+                if hasattr(response, '_result') and hasattr(response._result, 'candidates'):
+                    for candidate in response._result.candidates:
                         if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
                             for part in candidate.content.parts:
+                                parts_found += 1
+                                
+                                # Check for inline_data attribute
                                 if hasattr(part, 'inline_data') and part.inline_data:
-                                    image_data = part.inline_data.data
-                                    if isinstance(image_data, str):
-                                        image_data = base64.b64decode(image_data)
-                                    image = Image.open(BytesIO(image_data))
-                                    image.load()
-                                    return image, f"✅ Image generated successfully with {model_name}!"
-
-                # If no image found in response but no exception
-                errors.append(f"{model_name}: No image data in response")
-
-            except Exception as e:
-                error_str = str(e)
-                if "429" in error_str:
-                    if "limit: 0" in error_str:
-                        return None, f"❌ Image generation is restricted for your API key (Quota Limit: 0). This usually means image generation is not available in your region (e.g., EU/UK/Switzerland) on the Free Tier. Please check your Google AI Studio billing status."
-                    if "prepayment credits" in error_str.lower() or "RESOURCE_EXHAUSTED" in error_str:
-                        return None, f"❌ Your Gemini prepayment credits are depleted. Please top up at https://ai.studio/ or switch to ComfyUI in the API Setup tab."
+                                    inline_data_found += 1
+                                    try:
+                                        # Get the raw data
+                                        inline_data = part.inline_data
+                                        
+                                        # Check if data is already bytes or needs decoding
+                                        if hasattr(inline_data, 'data'):
+                                            image_data = inline_data.data
+                                            
+                                            # If it's string, base64 decode it
+                                            if isinstance(image_data, str):
+                                                image_data = base64.b64decode(image_data)
+                                            # If it's already bytes, use directly
+                                            elif isinstance(image_data, bytes):
+                                                pass
+                                            else:
+                                                continue  # Try next model
+                                            
+                                            # Create PIL Image from bytes
+                                            image_buffer = BytesIO(image_data)
+                                            image = Image.open(image_buffer)
+                                            
+                                            # Verify the image is valid by loading it
+                                            image.load()
+                                            
+                                            return image, f"✅ Image generated successfully with {model_name}!"
+                                            
+                                    except Exception as decode_error:
+                                        last_error = f"Error decoding image with {model_name}: {decode_error}"
+                                        continue  # Try next model
+                                
+                                # Check for other possible image data locations
+                                elif hasattr(part, 'text') and part.text:
+                                    # Sometimes image data might be in text as base64
+                                    text = part.text.strip()
+                                    if text.startswith('data:image/') or len(text) > 1000:  # Might be base64 image data
+                                        try:
+                                            # Try to decode as base64
+                                            if text.startswith('data:image/'):
+                                                # Remove data URL prefix
+                                                text = text.split(',', 1)[1] if ',' in text else text
+                                            
+                                            image_data = base64.b64decode(text)
+                                            image_buffer = BytesIO(image_data)
+                                            image = Image.open(image_buffer)
+                                            image.load()
+                                            
+                                            return image, f"✅ Image generated successfully with {model_name} (from text data)!"
+                                            
+                                        except Exception:
+                                            continue  # Try next model
                 
-                errors.append(f"{model_name}: {error_str}")
-                continue
-
-        return None, f"❌ Image generation failed. Tried {len(POSSIBLE_IMAGE_MODELS)} models.\nDetails:\n" + "\n".join(errors[:3])
-
+                # No image found in this model's response
+                response_text = getattr(response, 'text', 'No response text available')
+                last_error = f"Model {model_name}: No image in response. Response: {response_text[:100]}..."
+                
+            except Exception as e:
+                error_msg = str(e)
+                last_error = f"Model {model_name} failed: {error_msg}"
+                continue  # Try next model
+        
+        # If we get here, all models failed
+        if last_error:
+            if "404" in last_error or "not found" in last_error.lower():
+                return None, f"❌ No image models accessible. Tried: {', '.join(POSSIBLE_IMAGE_MODELS)}\n\nThis may be due to:\n• Models not available in your region\n• Insufficient API access level\n• Model names changed\n\nLast error: {last_error}"
+            elif "400" in last_error or "invalid" in last_error.lower():
+                return None, f"❌ API request error: {last_error}"
+            else:
+                return None, f"❌ All image models failed. Tried: {', '.join(POSSIBLE_IMAGE_MODELS)}\n\nLast error: {last_error}"
+        else:
+            return None, f"❌ No image models could be initialized. Tried: {', '.join(POSSIBLE_IMAGE_MODELS)}"
+    
     def save_generated_image(self, image: Image.Image, directory: Path, prefix: str = "gen") -> Path:
         """Save generated image to specified directory"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -644,333 +569,16 @@ class ElevenLabsClient:
         except Exception as e:
             return False, b"", f"Error generating speech: {str(e)}"
 
-class ACEStepApiClient:
-    """ACE-Step API client for voice generation"""
-    def __init__(self, url: str = "http://127.0.0.1:8000"):
-        self.url = url.rstrip("/")
-    
-    def configure_api(self, url: str) -> Tuple[bool, str]:
-        self.url = url.rstrip("/")
-        try:
-            response = requests.get(f"{self.url}/health", timeout=5)
-            if response.status_code == 200:
-                return True, "✅ ACE-Step API connected!"
-            return False, f"❌ API test failed: {response.text}"
-        except Exception as e:
-            return False, f"❌ Connection error: {str(e)}"
-            
-    def get_available_voices(self) -> Tuple[bool, List[Dict[str, Any]]]:
-        try:
-            response = requests.get(f"{self.url}/api/v1/custom-voice/speakers", timeout=5)
-            if response.status_code == 200:
-                speakers = response.json().get("speakers", [])
-                voices = [{"name": s, "voice_id": s} for s in speakers]
-                return True, voices
-            # Fallback
-            from pathlib import Path
-            voices_file = Path(__file__).resolve().parent.parent / "Qwen-Voice-TTS-Studio" / "main_voices.json"
-            if voices_file.exists():
-                with open(voices_file, 'r') as f:
-                    data = json.load(f)
-                    voices = [{"name": v, "voice_id": v} for v in data.get("voices", [])]
-                    return True, voices
-            return False, []
-        except Exception:
-            return False, []
-
-    def generate_speech(self, text: str, voice_id: str, settings: Dict[str, Any] = None) -> Tuple[bool, bytes, str]:
-        try:
-            payload = {
-                "text": text,
-                "speaker": voice_id,
-                "language": "english" # Default
-            }
-            response = requests.post(f"{self.url}/api/v1/custom-voice", json=payload, timeout=30)
-            if response.status_code == 200:
-                audio_base64 = response.json().get("audio", "")
-                audio_bytes = base64.b64decode(audio_base64)
-                return True, audio_bytes, "Speech generated successfully"
-            else:
-                return False, b"", f"Generation failed: {response.text}"
-        except Exception as e:
-            return False, b"", f"Error: {str(e)}"
-
-class ACEStepDirectClient:
-    """ACE-Step Direct in-process client for voice generation"""
-    def __init__(self, path: str = ""):
-        self.path = path
-        self.model = None
-        self._load_error = None
-        
-    def _add_to_sys_path(self):
-        import os
-        import sys
-        venv_path = os.path.join(self.path, "venv", "lib", "python3.12", "site-packages")
-        if os.path.exists(venv_path) and venv_path not in sys.path:
-            sys.path.insert(0, venv_path)
-            
-        venv_path2 = os.path.join(self.path, "venv", "lib", "python3.11", "site-packages")
-        if os.path.exists(venv_path2) and venv_path2 not in sys.path:
-            sys.path.insert(0, venv_path2)
-
-    def configure_api(self, path: str) -> Tuple[bool, str]:
-        self.path = path
-        self._add_to_sys_path()
-        try:
-            # First, check if qwen_tts is importable, otherwise we need to look in parent dir directly
-            import sys
-            parent_dir = str(Path(self.path).resolve())
-            if parent_dir not in sys.path:
-                sys.path.insert(0, parent_dir)
-            from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
-            if self.model is None:
-                model_path = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-                self.model = Qwen3TTSModel.from_pretrained(model_path)
-            return True, "✅ ACE-Step Direct Model loaded!"
-        except Exception as e:
-            self._load_error = str(e)
-            return False, f"❌ Failed to load model: {str(e)}"
-
-    def get_available_voices(self) -> Tuple[bool, List[Dict[str, Any]]]:
-        try:
-            from pathlib import Path
-            voices_file = Path(__file__).resolve().parent.parent / "Qwen-Voice-TTS-Studio" / "main_voices.json"
-            if voices_file.exists():
-                with open(voices_file, 'r') as f:
-                    data = json.load(f)
-                    voices = [{"name": v, "voice_id": v} for v in data.get("voices", [])]
-                    return True, voices
-            return False, []
-        except Exception:
-            return False, []
-
-    def generate_speech(self, text: str, voice_id: str, settings: Dict[str, Any] = None) -> Tuple[bool, bytes, str]:
-        if self.model is None:
-            return False, b"", "Model not loaded. Please configure ACE-Step Direct path first."
-        try:
-            import io
-            import soundfile as sf
-            wavs, sr = self.model.generate_custom_voice(text, speaker=voice_id, language="english")
-            if not wavs:
-                return False, b"", "No audio generated"
-                
-            buffer = io.BytesIO()
-            sf.write(buffer, wavs[0], sr, format="WAV")
-            buffer.seek(0)
-            return True, buffer.read(), "Speech generated successfully"
-        except Exception as e:
-            return False, b"", f"Error: {str(e)}"
-
-class QwenTTSApiClient:
-    """Qwen TTS API client for voice generation"""
-    def __init__(self, url: str = "http://127.0.0.1:8000"):
-        self.url = url.rstrip("/")
-    
-    def configure_api(self, url: str) -> Tuple[bool, str]:
-        self.url = url.rstrip("/")
-        try:
-            response = requests.get(f"{self.url}/health", timeout=5)
-            if response.status_code == 200:
-                return True, "✅ Qwen TTS API connected!"
-            return False, f"❌ API test failed: {response.text}"
-        except Exception as e:
-            return False, f"❌ Connection error: {str(e)}"
-            
-    def get_available_voices(self) -> Tuple[bool, List[Dict[str, Any]]]:
-        try:
-            response = requests.get(f"{self.url}/api/v1/custom-voice/speakers", timeout=5)
-            if response.status_code == 200:
-                speakers = response.json().get("speakers", [])
-                voices = [{"name": s, "voice_id": s} for s in speakers]
-                return True, voices
-            # Fallback
-            from pathlib import Path
-            voices_file = Path(__file__).resolve().parent.parent / "Qwen-Voice-TTS-Studio" / "main_voices.json"
-            if voices_file.exists():
-                with open(voices_file, 'r') as f:
-                    data = json.load(f)
-                    voices = [{"name": v, "voice_id": v} for v in data.get("voices", [])]
-                    return True, voices
-            return False, []
-        except Exception:
-            return False, []
-
-    def generate_speech(self, text: str, voice_id: str, settings: Dict[str, Any] = None) -> Tuple[bool, bytes, str]:
-        try:
-            payload = {
-                "text": text,
-                "speaker": voice_id,
-                "language": "english" # Default
-            }
-            response = requests.post(f"{self.url}/api/v1/custom-voice", json=payload, timeout=30)
-            if response.status_code == 200:
-                audio_base64 = response.json().get("audio", "")
-                audio_bytes = base64.b64decode(audio_base64)
-                return True, audio_bytes, "Speech generated successfully"
-            else:
-                return False, b"", f"Generation failed: {response.text}"
-        except Exception as e:
-            return False, b"", f"Error: {str(e)}"
-
-class QwenTTSDirectClient:
-    """Qwen TTS Direct in-process client for voice generation"""
-    def __init__(self, path: str = ""):
-        self.path = path
-        self.model = None
-        self._load_error = None
-        
-    def _add_to_sys_path(self):
-        import os
-        import sys
-        # Look for site-packages in the provided path's venv
-        venv_path = os.path.join(self.path, "venv", "lib", "python3.12", "site-packages")
-        if os.path.exists(venv_path) and venv_path not in sys.path:
-            sys.path.insert(0, venv_path)
-            
-        venv_path2 = os.path.join(self.path, "venv", "lib", "python3.11", "site-packages")
-        if os.path.exists(venv_path2) and venv_path2 not in sys.path:
-            sys.path.insert(0, venv_path2)
-
-    def configure_api(self, path: str) -> Tuple[bool, str]:
-        self.path = path
-        self._add_to_sys_path()
-        try:
-            import sys
-            parent_dir = str(Path(self.path).resolve())
-            if parent_dir not in sys.path:
-                sys.path.insert(0, parent_dir)
-            from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
-            if self.model is None:
-                # Check for local models folder first
-                local_model_path = Path(self.path) / "models" / "Qwen3-TTS-12Hz-1.7B-CustomVoice"
-                if local_model_path.exists():
-                    model_path = str(local_model_path)
-                else:
-                    # Resolve to local snapshot directory to prevent AutoProcessor from hitting the hub
-                    import os
-                    cache_dir = os.path.expanduser("~/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-1.7B-CustomVoice/snapshots")
-                    if os.path.exists(cache_dir):
-                        snapshots = os.listdir(cache_dir)
-                        if snapshots:
-                            model_path = os.path.join(cache_dir, snapshots[0])
-                        else:
-                            model_path = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-                    else:
-                        model_path = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-                self.model = Qwen3TTSModel.from_pretrained(model_path, local_files_only=True)
-            return True, "✅ Qwen TTS Direct Model loaded!"
-        except Exception as e:
-            self._load_error = str(e)
-            return False, f"❌ Failed to load model: {str(e)}"
-
-    def get_available_voices(self) -> Tuple[bool, List[Dict[str, Any]]]:
-        try:
-            from pathlib import Path
-            # Try main_voices.json in the studio path
-            voices_file = Path(self.path).resolve() / "main_voices.json"
-            if voices_file.exists():
-                with open(voices_file, 'r') as f:
-                    data = json.load(f)
-                    voices = [{"name": v, "voice_id": v} for v in data.get("voices", [])]
-                    return True, voices
-            
-            # Fallback to parent dir if relative
-            voices_file = Path(__file__).resolve().parent.parent / "Qwen-Voice-TTS-Studio" / "main_voices.json"
-            if voices_file.exists():
-                with open(voices_file, 'r') as f:
-                    data = json.load(f)
-                    voices = [{"name": v, "voice_id": v} for v in data.get("voices", [])]
-                    return True, voices
-            return False, []
-        except Exception:
-            return False, []
-
-    def generate_speech(self, text: str, voice_id: str, settings: Dict[str, Any] = None) -> Tuple[bool, bytes, str]:
-        try:
-            import io
-            import soundfile as sf
-            import json
-            from pathlib import Path
-            
-            # Check if it's a cloned voice
-            cloned_voices_file = Path(self.path).resolve() / "cloned_voices" / "voices.json"
-            is_cloned = False
-            ref_audio_path = None
-            if cloned_voices_file.exists():
-                with open(cloned_voices_file, 'r') as f:
-                    cloned_data = json.load(f)
-                    # Support case-insensitive matching
-                    voice_keys = {k.lower(): k for k in cloned_data.keys()}
-                    if voice_id.lower() in voice_keys:
-                        actual_key = voice_keys[voice_id.lower()]
-                        is_cloned = True
-                        ref_audio_path = str(Path(self.path).resolve() / cloned_data[actual_key]["ref_audio"])
-                        ref_text = cloned_data[actual_key].get("ref_text", "")
-            
-            if is_cloned:
-                if not hasattr(self, "base_model") or self.base_model is None:
-                    import os
-                    from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
-                    base_cache_dir = os.path.expanduser("~/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-1.7B-Base/snapshots")
-                    if os.path.exists(base_cache_dir) and os.listdir(base_cache_dir):
-                        base_model_path = os.path.join(base_cache_dir, os.listdir(base_cache_dir)[0])
-                    else:
-                        base_model_path = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-                    self.base_model = Qwen3TTSModel.from_pretrained(base_model_path, local_files_only=True)
-                
-                ref_text_val = ref_text if ref_text.strip() else None
-                x_vector_only = not bool(ref_text.strip())
-                wavs, sr = self.base_model.generate_voice_clone(
-                    text=text, 
-                    ref_audio=ref_audio_path, 
-                    ref_text=ref_text_val,
-                    x_vector_only_mode=x_vector_only,
-                    language="english"
-                )
-            else:
-                if self.model is None:
-                    return False, b"", "Custom voice model not loaded."
-                wavs, sr = self.model.generate_custom_voice(text, speaker=voice_id, language="english")
-                
-            if not wavs:
-                return False, b"", "No audio generated"
-                
-            buffer = io.BytesIO()
-            sf.write(buffer, wavs[0], sr, format="WAV")
-            buffer.seek(0)
-            return True, buffer.read(), "Speech generated successfully"
-        except Exception as e:
-            return False, b"", f"Error: {str(e)}"
-
-class UnifiedVoiceStudio:
+class ElevenLabsVoiceStudio:
     """Main voice studio for character audio generation"""
     
-    def __init__(self, config):
-        self.config = config
-        self.elevenlabs_client = ElevenLabsClient(config.elevenlabs_api_key)
-        self.qwentts_api_client = QwenTTSApiClient(config.qwentts_url)
-        self.qwentts_direct_client = QwenTTSDirectClient(config.qwentts_path)
-        self.acestep_api_client = ACEStepApiClient(config.acestep_url)
-        self.acestep_direct_client = ACEStepDirectClient(config.acestep_path)
-        
+    def __init__(self, api_key: str = ""):
+        self.client = ElevenLabsClient(api_key)
         self.voice_profiles: Dict[str, VoiceProfile] = {}
         self.audio_scenes: List[AudioScene] = []
         
         # Load existing voice profiles if any
         self.load_voice_profiles()
-
-    @property
-    def client(self):
-        if self.config.voice_provider == "qwentts":
-            if self.config.qwentts_mode == "direct":
-                return self.qwentts_direct_client
-            return self.qwentts_api_client
-        elif self.config.voice_provider == "acestep":
-            if self.config.acestep_mode == "direct":
-                return self.acestep_direct_client
-            return self.acestep_api_client
-        return self.elevenlabs_client
-
     
     def configure_api(self, api_key: str) -> str:
         """Configure API key"""
@@ -1066,8 +674,7 @@ class UnifiedVoiceStudio:
         
         # Save audio file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        ext = "wav" if audio_data.startswith(b'RIFF') else "mp3"
-        filename = f"{character_name.lower().replace(' ', '_')}_{timestamp}_{uuid.uuid4().hex[:6]}.{ext}"
+        filename = f"{character_name.lower().replace(' ', '_')}_{timestamp}_{uuid.uuid4().hex[:6]}.mp3"
         audio_path = DIALOGUE_DIR / filename
         
         with open(audio_path, 'wb') as f:
@@ -1136,8 +743,7 @@ class UnifiedVoiceStudio:
         
         # Save voiceover file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        ext = "wav" if audio_data.startswith(b'RIFF') else "mp3"
-        filename = f"voiceover_{timestamp}_{uuid.uuid4().hex[:6]}.{ext}"
+        filename = f"voiceover_{timestamp}_{uuid.uuid4().hex[:6]}.mp3"
         audio_path = DIALOGUE_DIR / filename
         
         with open(audio_path, 'wb') as f:
@@ -1147,99 +753,24 @@ class UnifiedVoiceStudio:
     
     def test_api_connection(self) -> str:
         """Test API connection and return status"""
-        if self.config.voice_provider == "elevenlabs":
-            return self.configure_api(self.config.elevenlabs_api_key)
-        elif self.config.voice_provider == "qwentts":
-            if self.config.qwentts_mode == "api":
-                return self.configure_api(self.config.qwentts_url)
-            else:
-                return self.configure_api(self.config.qwentts_path)
-        elif self.config.voice_provider == "acestep":
-            if self.config.acestep_mode == "api":
-                return self.configure_api(self.config.acestep_url)
-            else:
-                return self.configure_api(self.config.acestep_path)
-        return "Unknown voice provider"
-
-# =============================================================================
-# OLLAMA INTEGRATION
-# =============================================================================
-
-class OllamaClient:
-    """Handles communication with local Ollama instance"""
-    
-    def __init__(self, url: str):
-        self.url = url.rstrip('/')
-
-    def list_models(self) -> List[str]:
-        """Fetch available models from local Ollama"""
-        try:
-            response = requests.get(f"{self.url}/api/tags")
-            if response.status_code == 200:
-                models = response.json().get('models', [])
-                return [m['name'] for m in models]
-            return []
-        except Exception:
-            # Silently fail or use a concise message to avoid log clutter when Ollama is not running
-            return []
-
-    def generate_content(self, prompt: str, model_name: str) -> str:
-        """Generate text via Ollama API"""
-        if not model_name:
-            return "❌ No Ollama model selected. Please refresh and select a model in API Setup."
-            
-        try:
-            payload = {
-                "model": model_name,
-                "prompt": prompt,
-                "stream": False
-            }
-            response = requests.post(f"{self.url}/api/generate", json=payload)
-            if response.status_code == 200:
-                return response.json().get('response', '')
-            return f"❌ Ollama Error: {response.text}"
-        except Exception as e:
-            return f"❌ Ollama Connection Error: {str(e)}"
-
-class TextGenerator:
-    """Unified text generation abstraction for Gemini and Ollama"""
-    
-    def __init__(self, config: AppConfig, genai_client: Optional[genai.Client] = None):
-        self.config = config
-        self.genai_client = genai_client
-        self.ollama_client = OllamaClient(config.ollama_url)
-
-    def generate_content(self, prompt: str) -> str:
-        """Generate text based on current provider"""
-        if self.config.llm_provider == "ollama":
-            return self.ollama_client.generate_content(prompt, self.config.ollama_model)
-        
-        # Default to Gemini
-        if not self.genai_client:
-            return "❌ Google Gemini client not initialized. Switch to Ollama or provide a key."
-            
-        try:
-            response = self.genai_client.models.generate_content(
-                model=TEXT_MODEL,
-                contents=prompt
-            )
-            return response.text
-        except Exception as e:
-            return f"❌ Gemini Error: {str(e)}"
+        return self.configure_api(self.client.api_key)
 
 # =============================================================================
 # CHARACTER DEVELOPMENT SYSTEM
 # =============================================================================
 
 class CharacterDeveloper:
-    """AI-powered character development with multi-LLM support"""
+    """AI-powered character development from v6.py"""
     
-    def __init__(self, text_generator: TextGenerator):
-        self.text_generator = text_generator
+    def __init__(self, api_key: str = ""):
+        self.api_key = api_key
         self.conversation_history = []
     
     def develop_character_chat(self, user_input: str, chat_history: List) -> Tuple[List, str, str]:
         """Interactive character development chat"""
+        if not self.api_key:
+            return chat_history, "", "❌ Please configure API key first"
+        
         try:
             chat_history.append({"role": "user", "content": user_input})
             
@@ -1267,93 +798,28 @@ Be conversational and ask follow-up questions to refine the character. When the 
             
             full_prompt = f"{system_prompt}\n\nRecent conversation:\n{context}\n\nUser: {user_input}"
             
-            ai_response = self.text_generator.generate_content(full_prompt)
+            model = genai.GenerativeModel(TEXT_MODEL)
+            response = model.generate_content(full_prompt)
+            
+            ai_response = response.text
             chat_history.append({"role": "assistant", "content": ai_response})
             
             # Check if character seems ready
             status_message = ""
-            if "❌" in ai_response:
-                status_message = ai_response
-            else:
-                ready_keywords = ["character is ready", "ready for image generation", "save to library", "complete description"]
-                if any(keyword in ai_response.lower() for keyword in ready_keywords):
-                    status_message = "✅ Character(s) detected! You can now scan and save them."
+            ready_keywords = ["character is ready", "ready for image generation", "save to library", "complete description"]
+            if any(keyword in ai_response.lower() for keyword in ready_keywords):
+                status_message = "✅ Character development complete! Ready to save to library."
             
             return chat_history, "", status_message
             
         except Exception as e:
             error_msg = f"❌ Error: {str(e)}"
-            chat_history.append({"role": "assistant", "content": error_msg})
+            chat_history[-1][1] = error_msg
             return chat_history, "", error_msg
-
-    def scan_for_characters(self, chat_history: List) -> List[Dict[str, str]]:
-        """Scan chat history and extract all identified characters"""
-        if not chat_history:
-            return []
-        
-        try:
-            conversation_text = ""
-            for msg in chat_history:
-                if isinstance(msg, dict) and msg.get("content"):
-                    role = msg.get("role", "user").title()
-                    conversation_text += f"{role}: {msg['content']}\n\n"
-            
-            extraction_prompt = f"""Review the following story development conversation and identify ALL unique characters that have been developed with a name and some description.
-
-{conversation_text}
-
-For EACH character identified, provide their details in this EXACT JSON-like format (wrapped in <CHAR> tags):
-
-<CHAR>
-NAME: [Character Name]
-DESCRIPTION: [Physical appearance and key visual traits]
-PERSONALITY: [Key personality traits]
-BACKGROUND: [History and role in the world]
-STYLE: [Visual/artistic style notes]
-</CHAR>
-
-Only include characters that have at least a name and a basic description. Be thorough."""
-
-            text = self.text_generator.generate_content(extraction_prompt)
-            
-            characters = []
-            import re
-            char_blocks = re.findall(r'<CHAR>(.*?)</CHAR>', text, re.DOTALL)
-            
-            for block in char_blocks:
-                char_data = {
-                    "name": "Unknown",
-                    "description": "",
-                    "personality": "",
-                    "background": "",
-                    "style_notes": ""
-                }
-                
-                lines = block.strip().split('\n')
-                for line in lines:
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        key = key.strip().upper()
-                        value = value.strip()
-                        
-                        if key == "NAME": char_data["name"] = value
-                        elif key == "DESCRIPTION": char_data["description"] = value
-                        elif key == "PERSONALITY": char_data["personality"] = value
-                        elif key == "BACKGROUND": char_data["background"] = value
-                        elif key == "STYLE": char_data["style_notes"] = value
-                
-                if char_data["name"] != "Unknown":
-                    characters.append(char_data)
-            
-            return characters
-            
-        except Exception as e:
-            print(f"Error scanning for characters: {e}")
-            return []
     
     def extract_character_from_chat(self, chat_history: List) -> Dict[str, str]:
         """Extract character details from chat history using AI"""
-        if not chat_history:
+        if not self.api_key or not chat_history:
             # Return basic extraction from chat without AI
             return self._basic_chat_extraction(chat_history)
         
@@ -1381,9 +847,11 @@ STYLE_NOTES: [artistic style, visual direction]
 
 Be concise but capture the key details discussed."""
             
-            text = self.text_generator.generate_content(extraction_prompt)
+            model = genai.GenerativeModel(TEXT_MODEL)
+            response = model.generate_content(extraction_prompt)
             
             # Parse response into components
+            text = response.text
             extracted = {
                 "name": "",
                 "description": "",
@@ -1417,7 +885,6 @@ Be concise but capture the key details discussed."""
             
         except Exception as e:
             print(f"Error extracting character with AI: {e}")
-            return self._basic_chat_extraction(chat_history)
             return self._basic_chat_extraction(chat_history)
     
     def _basic_chat_extraction(self, chat_history: List) -> Dict[str, str]:
@@ -1472,18 +939,10 @@ class ComprehensiveStudio:
     
     def __init__(self):
         self.data_manager = DataManager()
-        self.genai_client = None
-        if self.data_manager.config.api_key:
-            try:
-                self.genai_client = genai.Client(api_key=self.data_manager.config.api_key)
-            except Exception as e:
-                print(f"Error initializing Gemini client: {e}")
-
-        self.text_generator = TextGenerator(self.data_manager.config, self.genai_client)
-        self.image_generator = ImageGenerator(self.data_manager.config, self.genai_client)
-        self.character_developer = CharacterDeveloper(self.text_generator)
-        self.voice_studio = UnifiedVoiceStudio(self.data_manager.config)
-
+        self.image_generator = ImageGenerator(self.data_manager.config.api_key)
+        self.character_developer = CharacterDeveloper(self.data_manager.config.api_key)
+        self.voice_studio = ElevenLabsVoiceStudio(self.data_manager.config.elevenlabs_api_key)
+        
         # Current state
         self.current_project: Optional[Project] = None
         self.selected_character_id: Optional[str] = None
@@ -1495,36 +954,14 @@ class ComprehensiveStudio:
             self.current_project = self.data_manager.load_project(self.data_manager.config.last_project)
     
     def configure_api_key(self, api_key: str) -> str:
-        """Configure Gemini API key for all systems"""
-        try:
-            self.genai_client = genai.Client(api_key=api_key)
-            success, message = self.image_generator.configure_api(api_key, self.genai_client)
-            if success:
-                self.data_manager.config.api_key = api_key
-                self.data_manager.save_config(self.data_manager.config)
-                self.text_generator.genai_client = self.genai_client
-                # Sync config references
-                self.text_generator.config = self.data_manager.config
-                self.image_generator.config = self.data_manager.config
-            return message
-        except Exception as e:
-            return f"❌ Failed to initialize Gemini client: {str(e)}"
+        """Configure API key for all systems"""
+        success, message = self.image_generator.configure_api(api_key)
+        if success:
+            self.data_manager.config.api_key = api_key
+            self.character_developer.api_key = api_key
+            self.data_manager.save_config(self.data_manager.config)
+        return message
     
-    def configure_ollama(self, url: str, model_name: str, provider: str) -> str:
-        """Configure Ollama settings"""
-        self.data_manager.config.ollama_url = url.strip()
-        self.data_manager.config.ollama_model = model_name
-        self.data_manager.config.llm_provider = provider
-        self.data_manager.save_config(self.data_manager.config)
-        
-        # Update text generator
-        self.text_generator.config = self.data_manager.config
-        return f"✅ Text provider set to {provider}. Ollama settings saved."
-
-    def get_ollama_models(self) -> List[str]:
-        """Fetch available models from Ollama"""
-        return self.text_generator.ollama_client.list_models()
-
     def create_project(self, name: str, description: str = "") -> Tuple[str, str]:
         """Create new project"""
         if not name.strip():
@@ -1552,10 +989,6 @@ class ComprehensiveStudio:
         """Load existing project"""
         project = self.data_manager.load_project(project_id)
         if project:
-            # Filter missing characters from project
-            existing_chars = [c.id for c in self.data_manager.list_characters()]
-            project.character_ids = [cid for cid in project.character_ids if cid in existing_chars]
-            
             self.current_project = project
             self.data_manager.config.last_project = project_id
             self.data_manager.save_config(self.data_manager.config)
@@ -1655,26 +1088,6 @@ class ComprehensiveStudio:
         
         self.data_manager.save_character(character)
         return f"✅ Saved character '{char_name}' to library! You can refine details in the Character Library tab."
-
-    def save_detected_characters(self, detected_chars: List[Dict]) -> str:
-        """Save selected characters from detected list"""
-        if not detected_chars:
-            return "❌ No characters selected or detected."
-        
-        saved_names = []
-        for char_data in detected_chars:
-            character = Character(
-                id=uuid.uuid4().hex[:12],
-                name=char_data["name"],
-                description=char_data["description"],
-                personality=char_data["personality"],
-                background=char_data["background"],
-                style_notes=char_data["style_notes"]
-            )
-            self.data_manager.save_character(character)
-            saved_names.append(character.name)
-            
-        return f"✅ Saved {len(saved_names)} character(s): {', '.join(saved_names)}"
 
     def get_character_choices(self) -> List[Tuple[str, str]]:
         """Get character choices for dropdown (name, id)"""
@@ -2483,65 +1896,12 @@ Create a {scene_style} scene showing these characters together in the described 
     # VOICE & AUDIO METHODS
     # =============================================================================
     
-    def configure_voice_settings(self, provider: str, elevenlabs_key: str, qwentts_mode: str, qwentts_url: str, qwentts_path: str, acestep_mode: str, acestep_url: str, acestep_path: str) -> str:
-        """Configure all voice-related settings"""
-        self.data_manager.config.voice_provider = provider
-        self.data_manager.config.elevenlabs_api_key = elevenlabs_key
-        self.data_manager.config.qwentts_mode = qwentts_mode
-        self.data_manager.config.qwentts_url = qwentts_url
-        self.data_manager.config.qwentts_path = qwentts_path
-        self.data_manager.config.acestep_mode = acestep_mode
-        self.data_manager.config.acestep_url = acestep_url
-        self.data_manager.config.acestep_path = acestep_path
-
+    def configure_elevenlabs_api_key(self, api_key: str) -> str:
+        """Configure ElevenLabs API key"""
+        self.data_manager.config.elevenlabs_api_key = api_key
         self.data_manager.save_config(self.data_manager.config)
-        self.voice_studio = UnifiedVoiceStudio(self.data_manager.config)
-
-        # Test connection for selected provider
-        status = f"✅ Voice provider set to {provider}."
-        if provider == "elevenlabs" and elevenlabs_key:
-            success, msg = self.voice_studio.client.configure_api(elevenlabs_key)
-            status += f" {msg}"
-        elif provider == "qwentts":
-            if qwentts_mode == "api":
-                success, msg = self.voice_studio.client.configure_api(qwentts_url)
-                status += f" {msg}"
-            else:
-                success, msg = self.voice_studio.client.configure_api(qwentts_path)
-                status += f" {msg}"
-        elif provider == "acestep":
-            if acestep_mode == "api":
-                success, msg = self.voice_studio.client.configure_api(acestep_url)
-                status += f" {msg}"
-            else:
-                success, msg = self.voice_studio.client.configure_api(acestep_path)
-                status += f" {msg}"
-
-        return status
-    def configure_comfyui(self, url: str, workflow_file: Optional[Any], provider: str) -> str:
-        """Configure ComfyUI settings and workflow"""
-        self.data_manager.config.comfyui_url = url.strip()
-        self.data_manager.config.image_provider = provider
-        
-        status = f"✅ Image provider set to {provider}."
-        
-        if workflow_file:
-            # workflow_file is a temp file path from Gradio
-            workflow_dest = DATA_DIR / "comfy_workflow.json"
-            try:
-                # Gradio file objects have a .name attribute which is the path
-                if hasattr(workflow_file, 'name'):
-                    shutil.copy(workflow_file.name, workflow_dest)
-                else:
-                    shutil.copy(workflow_file, workflow_dest)
-                self.data_manager.config.comfyui_workflow_path = str(workflow_dest)
-                status += " ✅ ComfyUI workflow uploaded."
-            except Exception as e:
-                status += f" ❌ Error saving workflow: {str(e)}"
-        
-        self.data_manager.save_config(self.data_manager.config)
-        self.image_generator.config = self.data_manager.config
-        return status
+        self.voice_studio = ElevenLabsVoiceStudio(api_key)
+        return self.voice_studio.configure_api(api_key)
     
     def get_available_voices(self) -> List[Dict[str, Any]]:
         """Get available ElevenLabs voices"""
@@ -2601,14 +1961,12 @@ Format as: Character Name: "dialogue text"
 
 Keep dialogue natural and appropriate to each character's voice."""
             
-            ai_text = self.text_generator.generate_content(prompt)
+            model = genai.GenerativeModel(TEXT_MODEL)
+            response = model.generate_content(prompt)
             
-            if "❌" in ai_text:
-                return []
-
             # Parse dialogue lines
             dialogue_lines = []
-            lines = ai_text.strip().split('\n')
+            lines = response.text.strip().split('\n')
             
             for line in lines:
                 line = line.strip()
@@ -2764,57 +2122,16 @@ def create_gradio_interface():
                         value=studio.data_manager.config.api_key
                     )
                     api_configure_btn = gr.Button("Configure Gemini API", variant="primary")
-                    
-                    gr.Markdown("### Service Configuration")
-                    llm_provider_radio = gr.Radio(
-                        choices=["gemini"],
-                        label="Text Generation Source",
-                        value="gemini",
-                        interactive=False
-                    )
-                    
-                    image_provider_radio = gr.Radio(
-                        choices=["gemini"],
-                        label="Image Generation Source",
-                        value="gemini",
-                        interactive=False
-                    )
                 
                 with gr.Column():
-                    gr.Markdown("### Voice Generation Provider")
-                    voice_provider_radio = gr.Radio(
-                        choices=["elevenlabs"],
-                        label="Voice Provider",
-                        value="elevenlabs",
-                        interactive=False
-                    )
-                    
-                    gr.Markdown("### ElevenLabs Settings")
+                    gr.Markdown("### ElevenLabs Voice API")
                     elevenlabs_key_input = gr.Textbox(
                         label="ElevenLabs API Key",
                         type="password",
                         placeholder="Enter your ElevenLabs API key...",
                         value=studio.data_manager.config.elevenlabs_api_key
                     )
-                    
-                    voice_configure_btn = gr.Button("Save ElevenLabs Settings", variant="secondary")
-
-            # Hidden/Advanced settings preserved for data compatibility
-            with gr.Accordion("Advanced / Legacy Settings", open=False, visible=False):
-                qwentts_mode_radio = gr.Radio(choices=["api", "direct"], value=studio.data_manager.config.qwentts_mode, visible=False)
-                qwentts_url_input = gr.Textbox(value=studio.data_manager.config.qwentts_url, visible=False)
-                qwentts_path_input = gr.Textbox(value=studio.data_manager.config.qwentts_path, visible=False)
-                acestep_mode_radio = gr.Radio(choices=["api", "direct"], value=studio.data_manager.config.acestep_mode, visible=False)
-                acestep_url_input = gr.Textbox(value=studio.data_manager.config.acestep_url, visible=False)
-                acestep_path_input = gr.Textbox(value=studio.data_manager.config.acestep_path, visible=False)
-                comfyui_url_input = gr.Textbox(value=studio.data_manager.config.comfyui_url, visible=False)
-                comfy_workflow_input = gr.File(visible=False)
-                ollama_url_input = gr.Textbox(value=studio.data_manager.config.ollama_url, visible=False)
-                ollama_model_dropdown = gr.Dropdown(choices=[studio.data_manager.config.ollama_model] if studio.data_manager.config.ollama_model else [], visible=False)
-                ollama_refresh_btn = gr.Button(visible=False)
-                comfy_configure_btn = gr.Button("Save ComfyUI Settings", visible=False)
-                ollama_configure_btn = gr.Button("Save Ollama Settings", visible=False)
-                refresh_ollama_btn = gr.Button("Refresh Ollama Models", visible=False)
+                    elevenlabs_configure_btn = gr.Button("Configure ElevenLabs API", variant="secondary")
             
             api_status = gr.Markdown()
             
@@ -2824,71 +2141,11 @@ def create_gradio_interface():
                 outputs=[api_status]
             )
             
-            voice_configure_btn.click(
-                studio.configure_voice_settings,
-                inputs=[voice_provider_radio, elevenlabs_key_input, qwentts_mode_radio, qwentts_url_input, qwentts_path_input, acestep_mode_radio, acestep_url_input, acestep_path_input],
+            elevenlabs_configure_btn.click(
+                studio.configure_elevenlabs_api_key,
+                inputs=[elevenlabs_key_input],
                 outputs=[api_status]
             )
-
-            comfy_configure_btn.click(
-                studio.configure_comfyui,
-                inputs=[comfyui_url_input, comfy_workflow_input, image_provider_radio],
-                outputs=[api_status]
-            )
-
-            def refresh_ollama_handler():
-                models = studio.get_ollama_models()
-                return gr.update(choices=models)
-
-            refresh_ollama_btn.click(
-                refresh_ollama_handler,
-                outputs=[ollama_model_dropdown]
-            )
-
-            ollama_configure_btn.click(
-                studio.configure_ollama,
-                inputs=[ollama_url_input, ollama_model_dropdown, llm_provider_radio],
-                outputs=[api_status]
-            )
-
-            # --- Immediate Provider Update Handlers ---
-            def update_llm_provider(provider):
-                studio.data_manager.config.llm_provider = provider
-                studio.data_manager.save_config(studio.data_manager.config)
-                studio.text_generator.config = studio.data_manager.config
-                return f"✅ Text provider set to {provider}"
-
-            def update_image_provider(provider):
-                studio.data_manager.config.image_provider = provider
-                studio.data_manager.save_config(studio.data_manager.config)
-                studio.image_generator.config = studio.data_manager.config
-                return f"✅ Image provider set to {provider}"
-
-            def update_voice_provider(provider):
-                studio.data_manager.config.voice_provider = provider
-                studio.data_manager.save_config(studio.data_manager.config)
-                # Re-init voice studio to match provider
-                studio.voice_studio = UnifiedVoiceStudio(studio.data_manager.config)
-                return f"✅ Voice provider set to {provider}"
-
-            llm_provider_radio.change(
-                update_llm_provider,
-                inputs=[llm_provider_radio],
-                outputs=[api_status]
-            )
-
-            image_provider_radio.change(
-                update_image_provider,
-                inputs=[image_provider_radio],
-                outputs=[api_status]
-            )
-
-            voice_provider_radio.change(
-                update_voice_provider,
-                inputs=[voice_provider_radio],
-                outputs=[api_status]
-            )
-            # ----------------------------------------
         
         # =============================================================================
         # PROJECT MANAGER TAB
@@ -2907,8 +2164,7 @@ def create_gradio_interface():
                     project_dropdown = gr.Dropdown(
                         label="Select Project",
                         choices=studio.get_project_choices(),
-                        value=studio.current_project.id if studio.current_project else None,
-                        allow_custom_value=False
+                        value=studio.current_project.id if studio.current_project else None
                     )
                     load_project_btn = gr.Button("Load Project", variant="secondary")
                     refresh_projects_btn = gr.Button("Refresh Projects")
@@ -2917,72 +2173,37 @@ def create_gradio_interface():
             current_project_info = gr.Markdown(
                 f"**Current Project:** {studio.current_project.name if studio.current_project else 'None'}"
             )
-
-            with gr.Column(visible=True) as project_chars_col:
-                gr.Markdown("### Project Characters")
-                
-                project_characters_select = gr.CheckboxGroup(
-                    label="Select Characters to include in this Project",
-                    choices=studio.get_character_choices(),
-                    value=[] if not studio.current_project else studio.current_project.character_ids
-                )
-                save_project_chars_btn = gr.Button("Update Project Characters", variant="primary")
             
             def create_project_handler(name, desc):
                 project_id, message = studio.create_project(name, desc)
-                if "✅" in message:
-                    gr.Info(message)
                 choices = studio.get_project_choices()
                 current_info = f"**Current Project:** {studio.current_project.name if studio.current_project else 'None'}"
-                char_choices = studio.get_character_choices()
-                char_values = studio.current_project.character_ids if studio.current_project else []
-                return message, gr.update(choices=choices, value=project_id), current_info, "", "", gr.update(choices=char_choices, value=char_values)
+                return message, gr.update(choices=choices, value=project_id), current_info, "", ""
             
             def load_project_handler(project_id):
                 message = studio.load_project(project_id)
-                if "✅" in message:
-                    gr.Info(message)
                 current_info = f"**Current Project:** {studio.current_project.name if studio.current_project else 'None'}"
-                char_choices = studio.get_character_choices()
-                char_values = studio.current_project.character_ids if studio.current_project else []
-                return message, current_info, gr.update(choices=char_choices, value=char_values)
+                return message, current_info
             
             def refresh_projects_handler():
                 choices = studio.get_project_choices()
                 return gr.update(choices=choices)
-
-            def update_project_characters_handler(selected_ids):
-                if not studio.current_project:
-                    msg = "❌ No project loaded."
-                    gr.Info(msg)
-                    return msg
-                studio.current_project.character_ids = selected_ids
-                studio.data_manager.save_project(studio.current_project)
-                msg = f"✅ Updated project '{studio.current_project.name}' with {len(selected_ids)} characters."
-                gr.Info(msg)
-                return msg
             
             create_project_btn.click(
                 create_project_handler,
                 inputs=[new_project_name, new_project_desc],
-                outputs=[project_status, project_dropdown, current_project_info, new_project_name, new_project_desc, project_characters_select]
+                outputs=[project_status, project_dropdown, current_project_info, new_project_name, new_project_desc]
             )
             
             load_project_btn.click(
                 load_project_handler,
                 inputs=[project_dropdown],
-                outputs=[project_status, current_project_info, project_characters_select]
+                outputs=[project_status, current_project_info]
             )
             
             refresh_projects_btn.click(
                 refresh_projects_handler,
                 outputs=[project_dropdown]
-            )
-
-            save_project_chars_btn.click(
-                update_project_characters_handler,
-                inputs=[project_characters_select],
-                outputs=[project_status]
             )
         
         # =============================================================================
@@ -2993,7 +2214,7 @@ def create_gradio_interface():
             gr.Markdown("### AI-Powered Character Creation Chat")
             gr.Markdown("Describe your character idea and let the AI help you develop it into a complete character profile.")
             
-            chatbot = gr.Chatbot(label="Character Development Chat", height=500, type="messages", allow_tags=False)
+            chatbot = gr.Chatbot(label="Character Development Chat", height=500, type="messages")
             user_input = gr.Textbox(
                 label="Your Message",
                 placeholder="I want to create a character who is...",
@@ -3006,48 +2227,8 @@ def create_gradio_interface():
             
             chat_status = gr.Textbox(label="Status", interactive=False)
             
-            gr.Markdown("---")
-            gr.Markdown("### 🔍 Extract Characters from Conversation")
-            gr.Markdown("Develop multiple characters in one chat, then click 'Scan' to identify and save them.")
-            
             with gr.Row():
-                scan_chat_btn = gr.Button("Scan Chat for Characters", variant="secondary")
-                save_all_btn = gr.Button("Save All Detected Characters", variant="primary")
-            
-            detected_chars_state = gr.State([])
-            detected_chars_view = gr.Markdown("No characters detected yet. Click 'Scan' after chatting.")
-            
-            def scan_handler(history):
-                chars = studio.character_developer.scan_for_characters(history)
-                if not chars:
-                    return [], "⚠️ No characters with names/descriptions found yet. Keep chatting!"
-                
-                view = "#### 👥 Detected Characters:\n"
-                for c in chars:
-                    view += f"- **{c['name']}**: {c['description'][:100]}...\n"
-                
-                return chars, view
-
-            def save_multi_handler(chars):
-                return studio.save_detected_characters(chars)
-
-            scan_chat_btn.click(
-                scan_handler,
-                inputs=[chatbot],
-                outputs=[detected_chars_state, detected_chars_view]
-            )
-            
-            save_all_btn.click(
-                save_multi_handler,
-                inputs=[detected_chars_state],
-                outputs=[chat_status]
-            )
-            
-            gr.Markdown("---")
-            gr.Markdown("### Manual Save (Legacy)")
-            
-            with gr.Row():
-                save_character_btn = gr.Button("Save Last Character to Library", variant="secondary")
+                save_character_btn = gr.Button("Save Character to Library", variant="primary")
             
             character_name_override = gr.Textbox(
                 label="Character Name (override if needed)",
@@ -3091,13 +2272,11 @@ def create_gradio_interface():
                 with gr.Column(scale=1):
                     character_dropdown = gr.Dropdown(
                         label="Select Character",
-                        choices=studio.get_character_choices(),
-                        allow_custom_value=False
+                        choices=studio.get_character_choices()
                     )
                     with gr.Row():
                         refresh_chars_btn = gr.Button("Refresh Characters")
                         new_char_btn = gr.Button("New Character", variant="secondary")
-                        delete_char_btn = gr.Button("Delete Character", variant="stop")
                     
                     gr.Markdown("### Character Details")
                     char_name_input = gr.Textbox(label="Name")
@@ -3179,17 +2358,6 @@ def create_gradio_interface():
             def new_character_handler():
                 # Clear all fields and dropdown selection
                 return (gr.update(value=None), "", "", "", "", "", [])
-
-            def delete_character_handler(char_id):
-                if not char_id:
-                    return "❌ Select a character to delete", gr.update()
-                
-                success = studio.data_manager.delete_character(char_id)
-                if success:
-                    studio.selected_character_id = None
-                    choices = studio.get_character_choices()
-                    return "✅ Character deleted successfully", gr.update(choices=choices, value=None), "", "", "", "", "", []
-                return "❌ Failed to delete character", gr.update()
             
             refresh_chars_btn.click(
                 refresh_characters_handler,
@@ -3200,12 +2368,6 @@ def create_gradio_interface():
                 new_character_handler,
                 outputs=[character_dropdown, char_name_input, char_desc_input, 
                         char_personality_input, char_background_input, char_style_input, reference_gallery]
-            )
-
-            delete_char_btn.click(
-                delete_character_handler,
-                inputs=[character_dropdown],
-                outputs=[char_save_status, character_dropdown, char_name_input, char_desc_input, char_personality_input, char_background_input, char_style_input, reference_gallery]
             )
         
         # =============================================================================
@@ -3220,8 +2382,7 @@ def create_gradio_interface():
                 with gr.Column():
                     gen_character_select = gr.Dropdown(
                         label="Select Character",
-                        choices=studio.get_character_choices(),
-                        allow_custom_value=False
+                        choices=studio.get_character_choices()
                     )
                     refresh_gen_chars = gr.Button("Refresh Characters")
                     
@@ -3455,8 +2616,7 @@ def create_gradio_interface():
                 with gr.Column():
                     chat_character_select = gr.Dropdown(
                         label="Select Character for Chat",
-                        choices=studio.get_character_choices(),
-                        allow_custom_value=False
+                        choices=studio.get_character_choices()
                     )
                     refresh_chat_chars = gr.Button("Refresh Characters")
                     
@@ -3464,8 +2624,7 @@ def create_gradio_interface():
                     chat_history = gr.Chatbot(
                         label="Character Image Generation Chat",
                         height=400,
-                        type="messages",
-                        allow_tags=False
+                        type="messages"
                     )
                     
                     chat_input = gr.Textbox(
@@ -3726,7 +2885,7 @@ def create_gradio_interface():
                 with gr.Column():
                     scene_characters_select = gr.CheckboxGroup(
                         label="Select Characters for Scene",
-                        choices=studio.get_character_choices()
+                        choices=[name for name, _ in studio.get_character_choices()]
                     )
                     refresh_scene_chars = gr.Button("Refresh Characters")
                     
@@ -3769,8 +2928,7 @@ def create_gradio_interface():
                     scene_ref_char_select = gr.Dropdown(
                         label="Add to Character References",
                         choices=studio.get_character_choices(),
-                        visible=False,
-                        allow_custom_value=False
+                        visible=False
                     )
                     
                     scene_status = gr.Textbox(label="Scene Status", interactive=False)
@@ -3798,10 +2956,19 @@ def create_gradio_interface():
             scene_selected_ref_indices = []
             scene_char_to_refs_map = {}  # Maps character IDs to their reference paths
             
-            def load_character_references_for_scene(character_ids):
+            def load_character_references_for_scene(selected_char_names):
                 """Load and display references for selected characters"""
-                if not character_ids:
+                if not selected_char_names:
                     return [], "Select characters to see their reference images", "**Selected References:** None"
+                
+                # Get character IDs
+                char_choices = dict(studio.get_character_choices())
+                character_ids = []
+                for name in selected_char_names:
+                    for choice_name, choice_id in char_choices.items():
+                        if choice_name == name:
+                            character_ids.append(choice_id)
+                            break
                 
                 # Collect all references from selected characters
                 all_refs = []
@@ -3828,7 +2995,16 @@ def create_gradio_interface():
                 
                 return all_refs, char_info_html, "**Selected References:** None"
             
-            def generate_scene_handler(char_ids, instruction, use_selected_only, single_mode):
+            def generate_scene_handler(selected_char_names, instruction, use_selected_only, single_mode):
+                # Convert character names to IDs
+                char_choices = dict(studio.get_character_choices())
+                char_ids = []
+                for name in selected_char_names:
+                    for choice_name, choice_id in char_choices.items():
+                        if choice_name == name:
+                            char_ids.append(choice_id)
+                            break
+                
                 if not char_ids:
                     return "❌ Select at least one character", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
                 
@@ -3945,7 +3121,7 @@ def create_gradio_interface():
             )
             
             refresh_scene_chars.click(
-                lambda: gr.update(choices=studio.get_character_choices()),
+                lambda: gr.update(choices=[name for name, _ in studio.get_character_choices()]),
                 outputs=[scene_characters_select]
             )
         
@@ -3984,8 +3160,7 @@ def create_gradio_interface():
                         save_edited_btn = gr.Button("Save to Character References", variant="secondary")
                         edited_char_select = gr.Dropdown(
                             label="Character to Save To",
-                            choices=studio.get_character_choices(),
-                            allow_custom_value=False
+                            choices=studio.get_character_choices()
                         )
                     
                     edit_description = gr.Textbox(
@@ -4075,8 +3250,7 @@ def create_gradio_interface():
                         save_expanded_btn = gr.Button("Save to References", variant="secondary")
                         expand_char_select = gr.Dropdown(
                             label="Character to Save To",
-                            choices=studio.get_character_choices(),
-                            allow_custom_value=False
+                            choices=studio.get_character_choices()
                         )
                     
                     expand_description = gr.Textbox(
@@ -4485,14 +3659,13 @@ def create_gradio_interface():
                     
                     # Available voices
                     refresh_voices_btn = gr.Button("🔄 Refresh Available Voices", variant="secondary")
-                    voices_dropdown = gr.Dropdown(label="Available Voices", choices=[], interactive=True, allow_custom_value=True)
+                    voices_dropdown = gr.Dropdown(label="Available Voices", choices=[], interactive=True)
                     
                     # Character voice assignment
                     voice_char_dropdown = gr.Dropdown(
                         label="Assign Voice to Character",
                         choices=[(c.name, c.id) for c in studio.data_manager.list_characters()],
-                        interactive=True,
-                        allow_custom_value=False
+                        interactive=True
                     )
                     assign_voice_btn = gr.Button("Assign Voice to Character", variant="primary")
                     
@@ -4510,8 +3683,7 @@ def create_gradio_interface():
                     test_character_dropdown = gr.Dropdown(
                         label="Test Character Voice",
                         choices=[(c.name, c.id) for c in studio.data_manager.list_characters()],
-                        interactive=True,
-                        allow_custom_value=False
+                        interactive=True
                     )
                     test_dialogue_btn = gr.Button("🎤 Test Character Voice", variant="secondary")
                     test_audio_status = gr.Textbox(label="Test Status", interactive=False)
@@ -4834,24 +4006,27 @@ def create_gradio_interface():
 
 if __name__ == "__main__":
     print("""
-    🎨 Inspira - Comprehensive Character & Storyboard Generator
+    🎨 Comprehensive Character Studio & Storyboard Generator
     
     📋 Features:
-    ✅ AI-powered character development & multi-character branching
-    ✅ Choice of Cloud (Gemini) or Local (Ollama) LLMs
-    ✅ Cloud (Gemini) or Local (ComfyUI) Image Generation
-    ✅ Persistent character library with reference consistency
+    ✅ AI-powered character development chat
+    ✅ Persistent character library with reference images
     ✅ Multi-project management with auto-save
+    ✅ Advanced image generation with Gemini 2.5 Flash Image
+    ✅ Multi-character scene creation
+    ✅ Storyboard assembly and export
     ✅ ElevenLabs voice integration with character dialogue
+    ✅ Scene audio generation and storyboard voiceover
     ✅ Complete audio-visual storyboard production
     
     🔧 Required Dependencies:
-    pip install -r requirements.txt
+    pip install gradio pillow google-generativeai requests
     
     🔑 Setup:
-    1. Configure Gemini/ElevenLabs API keys in 'API Setup' tab
-    2. (Optional) Start local Ollama or ComfyUI for private generation
-    3. Start creating characters, projects, and storyboards!
+    1. Get your Gemini API key from https://ai.google.dev/
+    2. Get your ElevenLabs API key from https://elevenlabs.io/
+    3. Enter both keys in the API Setup tab
+    4. Start creating characters, projects, and audio!
     
     🚀 Starting application...
     """)
