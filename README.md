@@ -46,32 +46,32 @@ It treats AI not as an automated assembly line, but as a **Digital Chief of Staf
 
 ---
 
-## 🎬 Video Walkthrough
+## 📹 Video Walkthrough
 
-Watch the 2-minute walkthrough of Inspira in action:
+Watch the walkthrough of Inspira in action:
+
+**[Local video file](assets/logowithaudio.mov)** — download and play directly from the repo.
 
 [![Inspira Walkthrough](https://img.youtube.com/vi/09QUiF_x0us/0.jpg)](https://www.youtube.com/watch?v=09QUiF_x0us)
 
 ---
 
-## 🚀 Key Features (Nano Edition)
-...
----
-
 ## 🧩 Sovereign & Expandable
 
-While this edition is optimized for high-performance cloud APIs, Inspira is architected as a **sovereign creative playground**. The entire pipeline is designed to be future-proof and is easily expandable to include:
+This Nano Banana Edition is built on cloud APIs (Google Gemini + ElevenLabs) for simplicity and portability. It does **not** include local LLM, ComfyUI, or Qwen-TTS integrations — those are part of the separate private Pro version.
 
-*   **Local LLMs**: Integration with **Ollama** for private, on-device brainstorming.
-*   **Local Image Control**: Hooks for **ComfyUI** to maintain stable, local control over character features.
-*   **Local Voice**: Support for zero-latency, on-device TTS models (like **Qwen-TTS**).
+If you want to extend this edition locally, the pipeline is designed to be future-proof and can be expanded to include:
+
+*   **Local LLMs**: Integration with Ollama for private, on-device brainstorming.
+*   **Local Image Control**: Hooks for ComfyUI to maintain stable, local control over character features.
+*   **Local Voice**: Support for zero-latency, on-device TTS models (like Qwen-TTS).
 
 ---
 
 ## 🛠️ Getting Started
 
 ### Prerequisites
-*   Python 3.10+
+*   Python 3.8 or higher
 *   [Google Gemini API Key](https://aistudio.google.com/)
 *   [ElevenLabs API Key](https://elevenlabs.io/) (Optional)
 
